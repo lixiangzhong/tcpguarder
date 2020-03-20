@@ -1,0 +1,4 @@
+/.idea/
+/.vscode/
+/cmd/tcpguarder/tcpguarder
+*.txt
