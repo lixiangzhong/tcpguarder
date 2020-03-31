@@ -46,4 +46,9 @@ var (
 		Usage:   "run kill every `duration`",
 		Value:   time.Second * 3,
 	}
+	FlagAbnormal = cli.BoolFlag{
+		Name:    "abnormal",
+		Aliases: []string{"ab"},
+		Usage:   "show abnormal top",
+	}
 )

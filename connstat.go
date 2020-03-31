@@ -58,7 +58,7 @@ type ConnStat struct {
 	Stat                   TCPStat
 	TxQueue                int64
 	RxQueue                int64
-	TimerActive            int
+	TimerActive            int //TimerActive,看下面的注释
 	Jiffies                int64
 	RTOTimeouts            int64 //超时重传次数
 	UID                    int

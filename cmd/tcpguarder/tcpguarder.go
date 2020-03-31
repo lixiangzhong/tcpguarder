@@ -26,7 +26,7 @@ func main() {
 	app.Usage = "tcpguarder"
 	app.EnableBashCompletion = true
 	app.Flags = []cli.Flag{
-		&FLagTop, &FlagPort, &FlagIPSetName, &FlagIPSetTimeout, &FlagWhiteIPFile,
+		&FLagTop, &FlagPort, &FlagIPSetName, &FlagIPSetTimeout, &FlagWhiteIPFile, &FlagAbnormal,
 	}
 	app.Before = showPortsAction
 	app.Action = ShowTopAction
@@ -57,11 +57,19 @@ func main() {
 }
 
 func ShowTopAction(c *cli.Context) (err error) {
-	total := 0
-	ss, err := tcpguarder.Top(c.IntSlice("port"))
-	if err != nil {
-		return
+	var ss []tcpguarder.CountItem
+	if c.Bool("ab") {
+		ss, err = TopAbnormal(c.IntSlice("port"))
+		if err != nil {
+			return
+		}
+	} else {
+		ss, err = tcpguarder.Top(c.IntSlice("port"))
+		if err != nil {
+			return
+		}
 	}
+	total := 0
 	for i, v := range ss {
 		total += v.N
 		if i > c.Int("top") {
@@ -71,6 +79,54 @@ func ShowTopAction(c *cli.Context) (err error) {
 	}
 	fmt.Println("\ntotal\nip:", len(ss), "tcp:", total)
 	return
+}
+
+func TopAbnormal(ports []int) ([]tcpguarder.CountItem, error) {
+	allport := len(ports) == 0
+	stats, err := tcpguarder.ConnStats()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tcpguarder.CountItem, 0)
+	m := map[string]int{}
+	for _, v := range stats {
+		if allport {
+			if isAbnormalLink(v) {
+				m[v.Remote.IP.String()]++
+			}
+			continue
+		}
+		for _, port := range ports {
+			if v.Local.Port == uint16(port) {
+				if isAbnormalLink(v) {
+					m[v.Remote.IP.String()]++
+				}
+			}
+		}
+	}
+	for k, v := range m {
+		result = append(result, tcpguarder.CountItem{
+			Key: k,
+			N:   v,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].N > result[j].N
+	})
+	return result, nil
+}
+func isAbnormalLink(l tcpguarder.ConnStat) bool {
+	switch l.Stat {
+	case tcpguarder.CLOSING, tcpguarder.FIN_WAIT1:
+		return true
+	}
+	if l.CongestionWindow == 1 && l.TxQueue != 0 && l.RxQueue != 0 {
+		return true
+	}
+	if l.TimerActive == 1 && l.RTOTimeouts > 3 {
+		return true
+	}
+	return false
 }
 
 func KillAction(c *cli.Context) error {
