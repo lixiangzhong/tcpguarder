@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -52,21 +53,42 @@ func (i IPPort) String() string {
 }
 
 type ConnStat struct {
-	Local  IPPort
-	Remote IPPort
-	Stat   TCPStat
+	Local                  IPPort
+	Remote                 IPPort
+	Stat                   TCPStat
+	TxQueue                int64
+	RxQueue                int64
+	TimerActive            int
+	Jiffies                int64
+	RTOTimeouts            int64 //超时重传次数
+	UID                    int
+	RTO                    int // 单位是clock_t
+	CongestionWindow       int //当前拥塞窗口大小
+	SlowStartSizeThreshold int //慢启动阈值 ,慢启动阈值大于等于0xFFFF则显示-1
 }
 
-func ConnStats() (stats []ConnStat, err error) {
+/*
+TimerActive
+  0  no timer is pending  //没有启动定时器
+  1  retransmit-timer is pending  //重传定时器
+  2  another timer (e.g. delayed ack or keepalive) is pending  //连接定时器、FIN_WAIT_2定时器或TCP保活定时器
+  3  this is a socket in TIME_WAIT state. Not all fields will contain data (or even exist)  //TIME_WAIT定时器
+  4  zero window probe timer is pending  //持续定时器
+*/
+
+func catProcNetTCP() ([]byte, error) {
 	b, err := NewCmd("cat /proc/net/tcp").CombinedOutput()
 	if err != nil {
-		fmt.Println(string(b))
-		return nil, err
+		return nil, errors.New(string(b) + err.Error())
 	}
+	return b, nil
+}
+
+func parseProcNetTCP(b []byte) (stats []ConnStat, err error) {
 	lines := strings.Split(string(b), "\n")
 	for _, line := range lines {
 		cols := strings.Fields(line)
-		if len(cols) < 4 {
+		if len(cols) != 17 {
 			continue
 		}
 		if cols[0] == "sl" {
@@ -87,9 +109,45 @@ func ConnStats() (stats []ConnStat, err error) {
 		if stat.Stat == "" {
 			continue
 		}
+		stat.TxQueue, stat.RxQueue, err = parseTxRxQueue(cols[4])
+		if err != nil {
+			continue
+		}
+		stat.TimerActive, stat.Jiffies, err = parseTrTm(cols[5])
+		if err != nil {
+			continue
+		}
+		stat.RTOTimeouts, err = HexToint64(cols[6])
+		if err != nil {
+			continue
+		}
+		stat.UID, err = strconv.Atoi(cols[7])
+		if err != nil {
+			continue
+		}
+		stat.RTO, err = strconv.Atoi(cols[12])
+		if err != nil {
+			continue
+		}
+		stat.CongestionWindow, err = strconv.Atoi(cols[15])
+		if err != nil {
+			continue
+		}
+		stat.SlowStartSizeThreshold, err = strconv.Atoi(cols[16])
+		if err != nil {
+			continue
+		}
 		stats = append(stats, stat)
 	}
 	return
+}
+
+func ConnStats() (stats []ConnStat, err error) {
+	b, err := catProcNetTCP()
+	if err != nil {
+		return
+	}
+	return parseProcNetTCP(b)
 }
 
 func parseHexIPPort(s string) (ip IPPort, err error) {
@@ -111,6 +169,47 @@ func parseHexIPPort(s string) (ip IPPort, err error) {
 	}
 	ip.Port = binary.BigEndian.Uint16(b)
 	return
+}
+func parseTxRxQueue(s string) (int64, int64, error) {
+	ss := strings.Split(s, ":")
+	if len(ss) != 2 {
+		return 0, 0, errors.New(s + " bad format: hex TxRxQueue")
+	}
+	tx, err := HexToint64(ss[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	rx, err := HexToint64(ss[1])
+	return tx, rx, err
+}
+func parseTrTm(s string) (int, int64, error) {
+	ss := strings.Split(s, ":")
+	if len(ss) != 2 {
+		return 0, 0, errors.New(s + " bad format: hex TrTm")
+	}
+	tr, err := HexToint64(ss[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	tm, err := HexToint64(ss[1])
+	return int(tr), tm, err
+}
+
+func HexToint64(s string) (int64, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return 0, err
+	}
+	var i int64
+	switch len(s) {
+	case 2:
+		i = int64(b[0])
+	case 4:
+		i = int64(binary.BigEndian.Uint16(b))
+	case 8:
+		i = int64(binary.BigEndian.Uint32(b))
+	}
+	return i, nil
 }
 
 func NewCmd(s string) *exec.Cmd {
